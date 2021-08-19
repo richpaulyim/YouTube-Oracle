@@ -1,0 +1,67 @@
+---
+title: "Optimize RF"
+author: "Cassandra Tai"
+date: "12/8/2020"
+output: html_document
+---
+
+#what we need lol
+```{r}
+library(randomForest)
+training <- read.csv("training.csv", header = TRUE)
+rf_importance <- read.csv('rf_importance.csv', header = TRUE)
+rf_importance$X <- as.character(rf_importance$X)
+```
+
+### Convert Features to Numeric
+```{r convert_to_numeric}
+#for each factor, convert it to numeric
+for (var in names(training))    #loop through each name of the variables with the alias "var"
+{
+  if(is.factor(training[,var]))
+  {
+    training[,var] = as.numeric(training[,var]) - 1 #TA likes to have 0 indexed, so values are 0 and 1
+  }
+}
+#test <-testing
+#for each factor, convert it to numeric
+for (var in names(test))    #loop through each name of the variables with the alias "var"
+{
+  if(is.factor(test[,var]))
+  {
+    test[,var] = as.numeric(test[,var]) - 1 #TA likes to have 0 indexed, so values are 0 and 1
+  }
+}
+```
+
+#loop to optimize
+```{r}
+best_subset_rf <- rfimportance$X[rf_importance$X.IncMSE> 0.010]
+best_subset_rf <- c(best_subset_rf,"growth_2_6")
+
+nodesizes <- seq(10,50,10) #adjust this
+maxnodes <- seq(100,350,50) #adjust this
+
+#Errors
+train_errs <- c()
+cv_errs <- c()
+
+for(i in 1:length(nodesizes)){
+  rf.train <- randomForest(growth_2_6~., data = training[, best_subset_rf], 
+                           mtry = length(best_subset_rf)-1, ntree=500, nodesize= nodesizes[i], maxnodes = maxnodes[j], importance=FALSE)
+  
+  #calculate training RMSE
+  yhat <- predict(rf.train, newdata = training)
+  rf_errs <- c(rf_errs, sqrt(mean((yhat - training$growth_2_6)^2)))
+  
+  # get cv_error and report to kaggle
+  cv_errs <- c(cv_errs, sqrt(mean(rf_model$mse)))
+}
+
+#plot
+#dunno how to plot these 
+
+#obtain test errors
+errors <- cbind(rep(nodesizes,length(maxnodes)), rep(maxnodes, each = length(nodesizes)), train_errs, cv_errs)
+errors
+```

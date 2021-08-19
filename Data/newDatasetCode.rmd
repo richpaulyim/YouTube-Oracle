@@ -1,0 +1,670 @@
+---
+title: "Clean Code"
+author: "Cassandra Tai"
+date: "12/9/2020"
+output: html_document
+---
+
+## Load necessary libraries
+```{r, warning = FALSE, message = FALSE}
+#library(ggplot2)
+library(dplyr)
+#library(reshape2)
+library(gbm) # for boosting
+library(glmnet) # for lasso and ridge
+library(randomForest) #for randomForest and bagging
+library(caret) # for cv 
+
+```
+
+## set working directory 
+```{r}
+setwd("C:\\Users\\cassa\\Documents\\UCLA\\Fourth Year\\Stats 101C\\Final Project") #change it to your own!
+```  
+
+## Read in data
+response variable called 'growth_2_6' which measures the percent change in views between the second and sixth hour since the video was published bounded between 0 and 10. 
+```{r}
+#Before PublishedDate update
+training <- read.csv("training.csv", header = TRUE)
+test <- read.csv("test.csv", header = TRUE) 
+
+#After PublishedDate update
+train <- read.csv("train.csv", header = TRUE)
+test <- read.csv("testing.csv", header = TRUE) 
+```
+
+--------------------------------ONLY RUN THIS IF YOU DO *NOT* HAVE THE NEW DATASETS ALREADY--------------------------------
+
+## To create the new variables (if do not have updated datasets)
+```{r}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+#training dataset:
+#separate the date and time to different columns, getting rid of the PublishedDate column
+training <- training %>% separate(PublishedDate, c("Date", "Time"), sep = " ") 
+#convert date and time columns to posix type
+training$Date <- as.Date(training$Date, "%m/%d/%Y")
+training$Time <- format(strptime(training$Time, "%H:%M"),"%H:%M")
+
+#now we want to create a new column for how many minutes it has been since midnight
+Hour <- training$Time %>% strptime(format = "%H:%M") %>% hour()
+Minute <- training$Time %>% strptime(format = "%H:%M") %>% minute()
+training$Time <- Hour*60 + Minute #creates new column
+#head(training[,c(1:4,261)]) #sanity check
+
+#for both training and testing, the earliest date is April 11th, 2020. This will be our starting date
+#create a new variable that gives us the number of days since 2020-04-11
+training$daysSince0411 <- difftime(training$Date, as.Date("2020-04-11"), units = "days") %>% as.numeric
+#head(daysSince0411) #sanity check
+
+train <- training[,-c(1,2)] #this gets rid of the id and unused date column
+#head(train) #sanity check
+write.csv(train, "train.csv", row.names = FALSE) #this writes the new csv 
+```
+
+## noW do the same for the test set 
+```{r}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+#test dataset:
+#separate the date and time to different columns, getting rid of the PublishedDate column
+test <- test %>% separate(PublishedDate, c("Date", "Time"), sep = " ") 
+#convert date and time columns to posix type
+test$Date <- as.Date(test$Date, "%m/%d/%Y")
+test$Time <- format(strptime(test$Time, "%H:%M"),"%H:%M")
+
+#now we want to create a new column for how many minutes it has been since midnight
+Hour <- test$Time %>% strptime(format = "%H:%M") %>% hour()
+Minute <- test$Time %>% strptime(format = "%H:%M") %>% minute()
+test$Time <- Hour*60 + Minute #creates new column
+#head(test[,c(1:4,260)]) #sanity check
+
+#for both test and testing, the earliest date is April 11th, 2020. This will be our starting date
+#create a new variable that gives us the number of days since 2020-04-11
+test$daysSince0411 <- difftime(test$Date, as.Date("2020-04-11"), units = "days") %>% as.numeric
+#head(daysSince0411) #sanity check
+
+testing <- test[,-2] #this keeps id column for test set and deletes unused date column
+#head(testing) #sanity check
+write.csv(testing, "testing.csv", row.names = FALSE) #this writes the new csv 
+```
+
+
+----------------------------------------------------------------------------------------------------------------------------------
+
+
+## Now let's run some RF models :)
+1. First, we need to get our list of predictors from the importance output of our rf model (choose ONE, or make your own)
+If you make a better one, tell your groupmates ;) 
+```{r}
+rfimportance <- read.csv('rfimportance.csv', header=TRUE)
+rfimportance$X <- as.character(rfimportance$X)
+
+#OR
+
+rfimportance <- read.csv('rf_importance.csv', header = TRUE)
+rfimportance$X <- as.character(rfimportance$X)
+
+```
+
+2. Note: If these are the old lists run from the original dataset, we need to swap PublishedDate with Date and daysSince0411
+Otherwise, skip this
+```{r}
+best_subset_rf <- rfimportance$X[rfimportance$X.IncMSE > .01] #can change the value
+best_subset_rf <- c(best_subset_rf,"daysSince0411","Time","growth_2_6")
+
+# Def a function 
+'%notin%' <- Negate('%in%')
+
+best_subset_rf <- best_subset_rf[which(best_subset_rf %notin% c("PublishedDate", "mean_green", "mean_red","num_words", "cnn_19", "cnn_68", "cnn_88"))]
+```
+
+2.5 Oops let's look at collinearity of our predictors
+```{r}
+cor_mtx = round(cor(train[best_subset_rf]), 2) 
+cor_mtx
+```
+
+
+3. Now, let's run our RF model!
+```{r}
+#play around with hyperparameters if you want including sampsize, nodesize, and maxnodes
+#rf_model <- randomForest(growth_2_6~., data = train[,best_subset_rf], mtry = length(best_subset_rf)-1, ntree=500, nodesize = 15, maxnodes = 350, sample = TRUE, importance=TRUE) #45
+#rf_model <- randomForest(growth_2_6~., data = train[,best_subset_rf], mtry = length(best_subset_rf)-1, ntree=500, nodesize = 10, maxnodes = 350, sample = TRUE, importance=TRUE) #46
+#rf_model <- randomForest(growth_2_6~., data = train[,best_subset_rf], mtry = length(best_subset_rf)-1, ntree=500, nodesize = 20, maxnodes = 400, sample = TRUE, importance=TRUE) #47,49
+#rf_model <- randomForest(growth_2_6~., data = train[,best_subset_rf], mtry = length(best_subset_rf)-1, ntree=500, nodesize = 23, maxnodes = 400, sample = TRUE, importance=TRUE) #48
+rf_model <- randomForest(growth_2_6~., data = train[,best_subset_rf], mtry = length(best_subset_rf)-1, ntree=500, sample = TRUE, importance=TRUE) #50, 51 ,52, 53
+rf_model$importance # this shows variable importance and how much mse would increase by if it is removed. Make sure all are positive values!
+
+#get some more info on the rf
+print(rf_model)
+
+#just curious
+tree_min <- which.min(rf_model$mse)
+tree_min #500
+sqrt(rf_model$mse[tree_min]) #how does this compare to our Kaggle public scores?
+
+#calculate training RMSE... this is not very important anymore
+yhat <- predict(rf_model, newdata = train)
+rf_errs <- mean((yhat - train$growth_2_6)^2)
+sqrt(rf_errs) 
+
+# get cv_error and report to kaggle
+## Note: redefined this many times oops sorry
+sqrt(tail(mean(rf_model$mse)))
+sqrt(rf_model$mse[500]) # to get the last OOB RMSE value (change value if not ntree=500)
+#again, how does this compare to our Kaggle public scores?     
+
+
+#to create predictions
+test.predicts = predict(rf_model, newdata = test[,-1])
+predictions = cbind(test$id, test.predicts) %>% as.data.frame()
+names(predictions) <- c("id", "growth_2_6")
+
+#creating csv file to turn in
+write.csv(predictions, "predictions53.csv", row.names = FALSE) #change csv name per prediction
+```
+Output for predictions 53: (without "mean_green", "mean_red","num_words", "cnn_19", "cnn_68", "cnn_88", "cnn_17", "cnn_89")
+                                  %IncMSE IncNodePurity
+Duration                      0.228201173   1572.701009
+views_2_hours                 0.636035685   2114.271032
+hog_454                       0.078053257   1087.635225
+cnn_10                        1.079433328   4239.215814
+cnn_12                        1.092924205   2213.422917
+cnn_25                        0.829494295   2714.589186
+cnn_86                        0.579936010   2424.563609
+mean_pixel_val                0.103083759   1311.767078
+doc2vec_10                    0.045731819   1064.290664
+punc_num_..12                 0.032536375    217.528227
+punc_num_..21                 0.066261517    452.102236
+punc_num_..28                 0.055314316    165.072915
+num_chars                     0.086586698    892.687504
+num_uppercase_chars           0.131461420    816.493665
+num_digit_chars               0.110050657    657.774426
+Num_Subscribers_Base_low_mid  0.676535281    957.762561
+Num_Subscribers_Base_mid_high 0.885302843   4660.622354
+Num_Views_Base_low            0.001177536      7.250614
+Num_Views_Base_low_mid        0.004634352     14.113410
+Num_Views_Base_mid_high       2.300189118  10879.413611
+avg_growth_low                0.688161451   2074.509645
+avg_growth_low_mid            1.128115248   3319.047760
+avg_growth_mid_high           0.263018818    646.767110
+count_vids_low_mid            0.265391778    724.912920
+count_vids_mid_high           0.280917719    665.712020
+daysSince0411                 0.218071746   1625.781276
+Time                          0.382768306   1989.839317
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, sample = TRUE,      importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 27
+
+          Mean of squared residuals: 2.078072
+                    % Var explained: 69.97
+[1] 494
+[1] 1.44128
+[1] 0.58054
+[1] 1.463825
+[1] 1.441552
+
+Output for predictions 52: (without"mean_green", "mean_red","num_words", "cnn_19", "cnn_68", "cnn_88", "cnn_12", "cnn_25")
+                                  %IncMSE IncNodePurity
+Duration                      0.226192353    1465.46329
+views_2_hours                 0.558523729    2048.64649
+hog_454                       0.075720608    1085.44918
+cnn_10                        0.843413909    4034.37322
+cnn_17                        1.491229369    5593.50738
+cnn_86                        0.674503146    2785.75256
+cnn_89                        1.099216550    2417.88160
+mean_pixel_val                0.110118637    1376.78076
+doc2vec_10                    0.043101195    1032.88547
+punc_num_..12                 0.039500522     211.34044
+punc_num_..21                 0.039633767     272.10290
+punc_num_..28                 0.120389073     309.54213
+num_chars                     0.090457639     978.06307
+num_uppercase_chars           0.112892128     748.33447
+num_digit_chars               0.088691357     569.06908
+Num_Subscribers_Base_low_mid  0.719110930    1074.54204
+Num_Subscribers_Base_mid_high 0.686922429    3644.93564
+Num_Views_Base_low            0.003880519      12.91799
+Num_Views_Base_low_mid        0.003939643      15.36636
+Num_Views_Base_mid_high       1.996512434    9304.31424
+avg_growth_low                0.828424000    2391.67529
+avg_growth_low_mid            1.072446772    3072.94427
+avg_growth_mid_high           0.265766871     494.77011
+count_vids_low_mid            0.181794703     544.78300
+count_vids_mid_high           0.242703330     552.54776
+daysSince0411                 0.174511084    1499.33504
+Time                          0.354492062    1976.04136
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, sample = TRUE,      importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 27
+
+          Mean of squared residuals: 2.077371
+                    % Var explained: 69.98
+[1] 356
+[1] 1.440709
+[1] 0.5805016
+[1] 1.461665
+[1] 1.441309
+
+
+*Output for predictions 51: (without "mean_green", "mean_red","num_words", "cnn_19", "cnn_68", "cnn_88")
+                                  %IncMSE IncNodePurity
+Duration                      0.189198054   1335.999066
+views_2_hours                 0.517115365   1890.981152
+hog_454                       0.069863726    980.348869
+cnn_10                        0.912345557   3876.477277
+cnn_12                        0.606958974   1372.577396
+cnn_17                        1.004561180   3928.778226
+cnn_25                        0.614066660   2088.243483
+cnn_86                        0.578241012   2204.825637
+cnn_89                        0.972768291   2288.546823
+mean_pixel_val                0.096451954   1254.274957
+doc2vec_10                    0.031897241    948.992915
+punc_num_..12                 0.029416069    184.481638
+punc_num_..21                 0.037728718    256.463849
+punc_num_..28                 0.110551839    278.157045
+num_chars                     0.094783516    874.680025
+num_uppercase_chars           0.104786475    716.880873
+num_digit_chars               0.089624851    570.851100
+Num_Subscribers_Base_low_mid  0.846581739   1221.524054
+Num_Subscribers_Base_mid_high 0.647155921   3781.254014
+Num_Views_Base_low            0.001070251      9.955581
+Num_Views_Base_low_mid        0.005538502     17.201240
+Num_Views_Base_mid_high       1.900297428   9535.263328
+avg_growth_low                0.733404406   2265.014445
+avg_growth_low_mid            1.008561844   3099.340803
+avg_growth_mid_high           0.198022999    437.135959
+count_vids_low_mid            0.169327620    484.763906
+count_vids_mid_high           0.208834935    511.047776
+daysSince0411                 0.172838407   1373.390795
+Time                          0.305229432   1744.698903
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, sample = TRUE,      importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 29
+
+          Mean of squared residuals: 2.060832
+                    % Var explained: 70.22
+[1] 499
+[1] 1.435475
+[1] 0.5782237
+[1] 1.45783
+[1] 1.43556
+
+Output for predictions 50: (without "mean_green", "mean_red","num_words")
+                                  %IncMSE IncNodePurity
+Duration                      0.183884164   1259.504914
+views_2_hours                 0.512364762   1770.114894
+hog_454                       0.058537086    884.714358
+cnn_10                        0.865257988   3654.514641
+cnn_12                        0.621557425   1252.656208
+cnn_17                        1.007625156   3487.800694
+cnn_19                        0.187477075    585.360173
+cnn_25                        0.662340109   1860.933788
+cnn_68                        0.164899637    753.205547
+cnn_86                        0.539252982   1874.138160
+cnn_88                        0.181854700    788.618512
+cnn_89                        0.950385856   1973.100070
+mean_pixel_val                0.100638926   1179.699160
+doc2vec_10                    0.033723022    849.387887
+punc_num_..12                 0.037443758    201.431972
+punc_num_..21                 0.038293949    279.366406
+punc_num_..28                 0.097070919    254.190172
+num_chars                     0.084504752    796.261557
+num_uppercase_chars           0.103848760    677.022850
+num_digit_chars               0.089466247    535.554138
+Num_Subscribers_Base_low_mid  0.819340800   1148.703741
+Num_Subscribers_Base_mid_high 0.687076672   3909.062944
+Num_Views_Base_low            0.001487301      9.132521
+Num_Views_Base_low_mid        0.005112082     17.726871
+Num_Views_Base_mid_high       1.921952882   9705.553433
+avg_growth_low                0.752768571   2259.075808
+avg_growth_low_mid            1.012375525   3136.237742
+avg_growth_mid_high           0.202662826    454.886816
+count_vids_low_mid            0.171780761    476.304702
+count_vids_mid_high           0.235940924    535.702359
+daysSince0411                 0.159665408   1334.758051
+Time                          0.288380004   1632.362952
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, sample = TRUE,      importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 32
+
+          Mean of squared residuals: 2.069342
+                    % Var explained: 70.1
+[1] 414
+[1] 1.437106
+[1] 0.5782589
+[1] 1.461463
+[1] 1.438521
+
+Output for predictions 49: (without "mean_green", "mean_red")
+                                  %IncMSE IncNodePurity
+Duration                      0.167662133    841.529657
+views_2_hours                 0.449243233   1259.137203
+hog_454                       0.039992794    431.771180
+cnn_10                        0.845648454   3313.068930
+cnn_12                        0.545075310    936.493936
+cnn_17                        0.981229071   3609.451983
+cnn_19                        0.143334675    320.531537
+cnn_25                        0.608080976   1543.518451
+cnn_68                        0.126063545    455.212182
+cnn_86                        0.464905192   1429.626599
+cnn_88                        0.134911355    462.949002
+cnn_89                        0.886302251   1676.898991
+mean_pixel_val                0.084846462    670.120064
+doc2vec_10                    0.024190641    391.608925
+punc_num_..12                 0.026535774    124.853707
+punc_num_..21                 0.036532192    245.403854
+punc_num_..28                 0.106911276    260.629856
+num_words                     0.048164924    242.410639
+num_chars                     0.052722941    340.212303
+num_uppercase_chars           0.093939739    401.103634
+num_digit_chars               0.078555390    388.470103
+Num_Subscribers_Base_low_mid  0.774870211   1148.769248
+Num_Subscribers_Base_mid_high 0.649883510   3628.635301
+Num_Views_Base_low            0.002324737      6.424164
+Num_Views_Base_low_mid        0.003212750     13.100756
+Num_Views_Base_mid_high       1.855808193   9428.472212
+avg_growth_low                0.731991559   2272.710340
+avg_growth_low_mid            0.999717343   3054.091788
+avg_growth_mid_high           0.178936420    423.801474
+count_vids_low_mid            0.148562280    443.312775
+count_vids_mid_high           0.220420514    483.159816
+daysSince0411                 0.144288132    873.938998
+Time                          0.252697084   1184.722846
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, nodesize = 20,      maxnodes = 400, sample = TRUE, importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 33
+
+          Mean of squared residuals: 2.093578
+                    % Var explained: 69.75
+[1] 463
+[1] 1.446445
+[1] 1.025833
+[1] 1.460813
+[1] 1.44692
+
+Output for predictions 48:
+                                  %IncMSE IncNodePurity
+Duration                      0.173019809    847.612311
+views_2_hours                 0.415563055   1236.830638
+hog_454                       0.038479532    403.848957
+cnn_10                        0.823623931   3233.261006
+cnn_12                        0.511034008    908.826084
+cnn_17                        0.976980809   3548.269728
+cnn_19                        0.148192784    331.326254
+cnn_25                        0.599152368   1523.043993
+cnn_68                        0.127246138    438.869832
+cnn_86                        0.446206315   1442.337110
+cnn_88                        0.135200398    468.250909
+cnn_89                        0.849095685   1737.306689
+mean_pixel_val                0.061099227    367.636494
+mean_red                      0.041903699    339.297038
+mean_green                    0.071972487    381.964485
+doc2vec_10                    0.021050433    387.522442
+punc_num_..12                 0.028364408    129.225332
+punc_num_..21                 0.034232128    256.099150
+punc_num_..28                 0.101126193    256.105000
+num_words                     0.045334405    216.399335
+num_chars                     0.051013057    328.950785
+num_uppercase_chars           0.100552294    397.996461
+num_digit_chars               0.080170628    385.903741
+Num_Subscribers_Base_low_mid  0.768652472   1162.937711
+Num_Subscribers_Base_mid_high 0.641737718   3690.707094
+Num_Views_Base_low            0.001384925      5.432315
+Num_Views_Base_low_mid        0.003586747     13.476753
+Num_Views_Base_mid_high       1.852477999   9413.879075
+avg_growth_low                0.755289836   2296.647581
+avg_growth_low_mid            1.007114029   3068.125228
+avg_growth_mid_high           0.179902830    434.787679
+count_vids_low_mid            0.146352965    443.146536
+count_vids_mid_high           0.200459575    456.999612
+daysSince0411                 0.137807553    857.940093
+Time                          0.241392939   1146.000533
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, nodesize = 23,      maxnodes = 400, sample = TRUE, importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 35
+
+          Mean of squared residuals: 2.095914
+                    % Var explained: 69.71
+[1] 496
+[1] 1.447694
+[1] 1.013548
+[1] 1.46252
+[1] 1.447727
+
+
+Output for predictions 47:
+                                  %IncMSE IncNodePurity
+Duration                      0.157157151    819.868823
+views_2_hours                 0.433473999   1234.726387
+hog_454                       0.035928710    415.695463
+cnn_10                        0.831773019   3194.611162
+cnn_12                        0.533649732    907.481596
+cnn_17                        0.948147555   3401.474423
+cnn_19                        0.135418516    311.655809
+cnn_25                        0.584247730   1517.491064
+cnn_68                        0.130924428    436.553071
+cnn_86                        0.456223419   1446.654764
+cnn_88                        0.128763532    447.444653
+cnn_89                        0.863299199   1673.139211
+mean_pixel_val                0.064399269    365.086255
+mean_red                      0.034920663    330.169126
+mean_green                    0.064288083    367.832774
+doc2vec_10                    0.021149498    368.238369
+punc_num_..12                 0.027717205    117.162044
+punc_num_..21                 0.033432159    252.979421
+punc_num_..28                 0.096904463    225.431788
+num_words                     0.048403703    239.733834
+num_chars                     0.050818234    316.124201
+num_uppercase_chars           0.098863446    400.411869
+num_digit_chars               0.084992255    385.991853
+Num_Subscribers_Base_low_mid  0.811577804   1163.283204
+Num_Subscribers_Base_mid_high 0.649917322   3728.635449
+Num_Views_Base_low            0.001519105      5.082104
+Num_Views_Base_low_mid        0.002860854     12.233441
+Num_Views_Base_mid_high       1.888847066   9640.235897
+avg_growth_low                0.749045711   2263.788181
+avg_growth_low_mid            1.011806931   3053.380500
+avg_growth_mid_high           0.186173226    432.017903
+count_vids_low_mid            0.154103797    465.318712
+count_vids_mid_high           0.211343377    489.093078
+daysSince0411                 0.148934567    860.960466
+Time                          0.248334257   1144.721028
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, nodesize = 20,      maxnodes = 400, sample = TRUE, importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 35
+
+          Mean of squared residuals: 2.085155
+                    % Var explained: 69.87
+[1] 475
+[1] 1.443774
+[1] 1.020386
+[1] 1.455785
+[1] 1.444007
+
+
+
+Output for predictions 46:
+                                  %IncMSE IncNodePurity
+Duration                      0.144616749    709.282688
+views_2_hours                 0.403337302   1097.305257
+hog_454                       0.026244130    304.837909
+cnn_10                        0.858040058   3098.017054
+cnn_12                        0.511856662    861.211843
+cnn_17                        0.941281786   3384.312674
+cnn_19                        0.115038605    246.144242
+cnn_25                        0.535248050   1389.022786
+cnn_68                        0.106103631    358.718847
+cnn_86                        0.435000703   1301.528331
+cnn_88                        0.105366167    373.358809
+cnn_89                        0.853483247   1585.571151
+mean_pixel_val                0.051084392    297.444242
+mean_red                      0.030036454    261.874878
+mean_green                    0.065115292    319.001706
+doc2vec_10                    0.013543384    271.114970
+punc_num_..12                 0.022780684    106.632515
+punc_num_..21                 0.036039065    238.434723
+punc_num_..28                 0.095504713    235.073445
+num_words                     0.046916281    232.300909
+num_chars                     0.042173801    263.664601
+num_uppercase_chars           0.079309620    334.592892
+num_digit_chars               0.081573365    364.892052
+Num_Subscribers_Base_low_mid  0.764636805   1137.240895
+Num_Subscribers_Base_mid_high 0.691065774   3720.335071
+Num_Views_Base_low            0.001462968      5.071695
+Num_Views_Base_low_mid        0.002305936      9.868857
+Num_Views_Base_mid_high       1.924295879   9579.823810
+avg_growth_low                0.740848122   2288.318427
+avg_growth_low_mid            1.015680081   3058.245779
+avg_growth_mid_high           0.160074680    396.402719
+count_vids_low_mid            0.156233362    448.174947
+count_vids_mid_high           0.208682771    477.936614
+daysSince0411                 0.124865882    752.300059
+Time                          0.223611389    999.886469
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, nodesize = 10,      maxnodes = 350, sample = TRUE, importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 35
+
+          Mean of squared residuals: 2.116943
+                    % Var explained: 69.41
+[1] 493
+[1] 1.454828
+[1] 1.123877
+[1] 1.469611
+[1] 1.454972
+
+Output of predictions45: 
+                                  %IncMSE IncNodePurity
+Duration                      0.169800407     818.91816
+views_2_hours                 0.430386934    1129.93517
+hog_454                       0.030634351     322.88759
+cnn_10                        0.862732178    3158.03785
+cnn_12                        0.508232837     882.99157
+cnn_17                        0.970467105    3308.80375
+cnn_19                        0.121896262     261.92841
+cnn_25                        0.577677023    1511.15715
+cnn_68                        0.104131271     366.88967
+cnn_86                        0.435214023    1341.70430
+cnn_88                        0.105819244     382.57019
+cnn_89                        0.914860555    1622.18670
+mean_pixel_val                0.060565919     314.41761
+mean_red                      0.031495541     274.51259
+mean_green                    0.064453900     341.79848
+doc2vec_10                    0.018001122     303.05321
+punc_num_..12                 0.026907859     124.81028
+punc_num_..21                 0.034015446     232.11149
+punc_num_..28                 0.091029185     208.86047
+num_words                     0.043006547     208.21789
+num_chars                     0.044307283     268.81480
+num_uppercase_chars           0.089463034     349.22795
+num_digit_chars               0.073632545     344.42841
+Num_Subscribers_Base_low_mid  0.819702275    1171.39440
+Num_Subscribers_Base_mid_high 0.635243143    3699.89742
+Num_Views_Base_low            0.001126968       5.53589
+Num_Views_Base_low_mid        0.002813009      10.27996
+Num_Views_Base_mid_high       1.889386750    9648.95755
+avg_growth_low                0.750571061    2287.57066
+avg_growth_low_mid            1.003960426    3058.63680
+avg_growth_mid_high           0.163817413     390.84473
+count_vids_low_mid            0.149233556     445.43911
+count_vids_mid_high           0.199115565     445.75715
+daysSince0411                 0.139269960     786.59169
+Time                          0.223244029    1033.02377
+
+Call:
+ randomForest(formula = growth_2_6 ~ ., data = train[, best_subset_rf],      mtry = length(best_subset_rf) - 1, ntree = 500, nodesize = 15,      maxnodes = 350, sample = TRUE, importance = TRUE) 
+               Type of random forest: regression
+                     Number of trees: 500
+No. of variables tried at each split: 35
+
+          Mean of squared residuals: 2.102224
+                    % Var explained: 69.62
+[1] 412
+[1] 1.449861
+[1] 1.092817
+[1] 1.461448
+[1] 1.449905
+
+
+## Boosting 
+- this doesn't do very well :')
+
+```{r Boosting, fig.height=4}
+#best_subset_rf <- rfimportance$X[rfimportance$IncNodePurity>123]
+#best_subset_rf <- c(best_subset_rf,"growth_2_6")
+#range of lambda values
+lambdas <- 10^seq(-2.5, 0, by = 0.1)
+# need to split data in train and testing
+set.seed(1234)
+train_ind <- sample(seq_len(nrow(train)), size = 2150, replace = FALSE)
+train_train <- train[train_ind,]
+train_test <- train[-train_ind,]
+
+#Errors
+train_errs <- c()
+test_errs <- c()
+for(i in 1:length(lambdas)){
+  boost.train <- gbm(growth_2_6 ~ ., data = train_train[,best_subset_rf], distribution = "gaussian", 
+                     n.trees = 1000, shrinkage = lambdas[i])
+  
+  #train_pred <- predict(boost.train, newdata = train_train, n.trees = 1000)
+  #train_errs[i] <- mean((train_train$growth_2_6 - train_pred)^2) 
+  
+  test_pred <- predict(boost.train, newdata = train_test, n.trees = 1000)
+  test_errs[i] <- mean((train_test$growth_2_6 - test_pred)^2)
+}
+#plot
+#plot(lambdas, sqrt(train_errs), type = "b", xlab = "Shrinkage Values", 
+#     ylab = "Training RMSE", main = "Training MSE by Shrinkage Value")
+plot(lambdas, test_errs, xlab = "Shrinkage Values", type = "b", 
+     ylab = "Testing MSE", main = "Testing MSE by Shrinkage Value")
+
+#obtain test errors
+errors <- cbind(lambdas, test_errs)
+errors
+errors[which.min(test_errs),-2]
+boost_err <- min(test_errs)
+```
+### use optimal lambda to run model
+```{r}
+boost.train <- gbm(growth_2_6 ~ ., data = train[,best_subset_rf], distribution = "gaussian", 
+                     n.trees = 1000, shrinkage = 0.06309573)
+
+#calculate training RMSE
+yhat <- predict(boost.train, n.trees = 1000, newdata = train)
+boost_errs <- mean((yhat-train$growth_2_6)^2)
+sqrt(boost_errs) # 1.523527
+
+#to create predictions
+test.predicts = predict(boost.train, n.trees = 1000, test)
+predictions = cbind(test$id, test.predicts) %>% as.data.frame()
+names(predictions) <- c("id", "growth_2_6")
+write.csv(predictions, "predictions54.csv", row.names = FALSE) #change csv name per prediction
+```
